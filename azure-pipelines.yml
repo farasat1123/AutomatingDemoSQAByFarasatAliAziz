@@ -1,0 +1,110 @@
+# ASP.NET
+# Build and test ASP.NET projects.
+# Add steps that publish symbols, save build artifacts, deploy, and more:
+# https://docs.microsoft.com/azure/devops/pipelines/apps/aspnet/build-aspnet-4
+
+parameters:
+- name: ENV
+  displayName: ENV
+  type: string
+  values:
+  - QA
+  - Prod
+
+- name: adminUser
+  displayName: Run for ADMIN user
+  type: boolean
+  default: false
+
+- name: normalUser
+  displayName: Run for NORMAL user
+  type: boolean
+  default: false
+
+trigger:
+- master
+
+pool:
+  vmImage: 'windows-latest'
+
+variables:
+  solution: '**/*.sln'
+  buildPlatform: 'Any CPU'
+  buildConfiguration: 'Release'
+
+jobs:
+- job: Test
+  timeoutInMinutes: 400 # how long to run the job before automatically cancelling
+  
+  variables:
+  - name: ENV
+    value: ${{ parameters.ENV }}
+
+  - name: adminUser
+    value: ${{ parameters.adminUser }}
+    
+  - name: fleetUser
+    value: ${{ parameters.normalUser }}
+
+  steps:
+
+  - task: UseDotNet@2
+    inputs:
+      packageType: sdk
+      version: '6.0.x'
+      includePreviewVersions: true
+
+  - task: NuGetToolInstaller@1
+    displayName: 'Install Packages'
+    inputs:
+      versionSpec: '5.8.0'
+      checkLatest: true
+
+  - task: NuGetCommand@2
+    inputs:
+      restoreSolution: '$(solution)'
+
+  - task: DotNetCoreCLI@2
+    displayName: 'Build'
+    inputs:
+      command: build
+      projects: '**/*.sln'
+
+
+  - task: DotNetCoreCLI@2
+    displayName: 'Test'
+    continueOnError: true    
+    ${{ if ne(parameters.ENV, 'QA') }}:
+      inputs:
+        command: test
+        projects: '**/*.sln'
+        arguments: '--filter "Category=SMOKE"'
+      name: RunTests
+    ${{ if eq(parameters.ENV, 'QA') }}:
+      inputs:
+        command: test
+        projects: '**/*.sln'
+        name: RunTests
+
+  - task: PowerShell@2
+    displayName: 'AurePipeStatusEmail'
+    condition: or(and(eq(variables['ENV'], 'QA'), contains(variables['Build.SourceBranch'], 'refs/heads/master')), and(eq(variables['ENV'], 'Prod'), contains(variables['Build.SourceBranch'], 'refs/heads/master')), eq(variables['Agent.JobStatus'], 'Failed'))
+    inputs:
+      targetType: 'inline'
+      script: |
+        $EmailTo = 'farasataliazizarcbuild@gmail.com'
+        $EmailFrom = 'Azure Pipelines <noreply@azurepipelines.com>'
+        $Subject = 'Azure pipeline test result'
+        $Status = "$(Build.Status)"
+        if (eq $Status "Failed") {
+          $Subject = "Azure pipeline failed"
+        }
+        $Body = "Hi,<br><br>The build and test result for the Azure pipeline is as follows:<br><br>Status: $Status<br><br>Best regards,<br>Azure Pipelines"
+        $SMTPServer = 'smtp.office365.com'
+        $SMTPPort = '587'
+        $SMTPUsername = '$(SMTPUsername)'
+        $SMTPPassword = '$(SMTPPassword)'
+        
+        Send-MailMessage -To $EmailTo -From $EmailFrom -Subject $Subject -Body $Body -SmtpServer $SMTPServer -Port $SMTPPort -UseSsl -Credential (New-Object System.Management.Automation.PSCredential($SMTPUsername, (ConvertTo-SecureString $SMTPPassword -AsPlainText -Force)))
+
+
